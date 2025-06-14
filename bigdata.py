@@ -1,249 +1,130 @@
 import sys
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
- KYH
-import koreanize_matplotlib
-
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QPushButton, QLabel, QVBoxLayout, QFileDialog,
-    QCheckBox, QHBoxLayout, QMessageBox, QScrollArea
+    QApplication, QWidget, QPushButton, QLabel, QVBoxLayout,
+    QLineEdit, QListWidget, QMessageBox
 )
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
 
-# pip install pyqt5 pandas matplotlib koreanize-matplotlib 라이브러리 설치 필요
-
-class SubwayCongestionApp(QWidget):
+class SubwayApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("지하철 혼잡도 시각화 (PyQt5)")
-        self.setGeometry(100, 100, 500, 600)
+        self.setWindowTitle("Subway Congestion Viewer - Line 2 Only")
+        self.setGeometry(100, 100, 1000, 800)  # ✅ GUI 기본 크기 넉넉히 설정
 
-        self.file_path = None
-        self.station_checkboxes = {}
+        self.init_data()   # ✅ 데이터 불러오기 및 전처리
+        self.init_ui()     # ✅ UI 초기화
 
-        self.init_ui()
+    def init_data(self):
+        # ✅ 1. CSV 불러오기
+        df = pd.read_csv("지하철 혼잡도.csv", encoding='cp949')
+
+        # ✅ 2. 열 이름 표준화
+        df = df.rename(columns={'호선': 'Line', '출발역': 'Station'})
+
+        # ✅ 3. 시간대 컬럼 영어 형식으로 변경 (HH:MM)
+        new_time_cols = {}
+        for col in df.columns:
+            if '시' in col and '분' in col:
+                hour = col.split('시')[0].zfill(2)
+                minute = col.split('시')[1].replace('분', '').zfill(2)
+                new_time_cols[col] = f"{hour}:{minute}"
+        df = df.rename(columns=new_time_cols)
+
+        # ✅ 4. 시간대 컬럼만 필터링 (09:00~23:00)
+        self.time_cols = [col for col in df.columns if ':' in col and '09:00' <= col <= '23:00']
+
+        # ✅ 5. 2호선만 필터링
+        df = df[df['Line'].astype(str).str.contains('2')]
+
+        # ✅ 6. 2호선 전체 영어 매핑 (누락된 역 추가)
+        name_map = {
+            '강남': 'Gangnam', '역삼': 'Yeoksam', '선릉': 'Seolleung', '삼성': 'Samseong',
+            '종합운동장': 'Sports Complex', '신천': 'Sincheon', '잠실': 'Jamsil',
+            '잠실새내': 'Jamsilsaenae', '신정': 'Sinjeong', '양천구청': 'Yangcheon-gu Office',
+            '도림천': 'Dorimcheon', '신도림': 'Sindorim', '구로디지털단지': 'Guro Digital Complex',
+            '건대입구': 'Konkuk Univ.', '홍대입구': 'Hongdae', '신촌': 'Sinchon',
+            '서울대입구': 'Seoul Natl Univ.', '뚝섬': 'Ttukseom', '성수': 'Seongsu',
+            '왕십리': 'Wangsimni', '낙성대': 'Nakseongdae', '사당': 'Sadang',
+            '방배': 'Bangbae', '서초': 'Seocho', '교대': 'Gyodae',
+            '을지로입구': 'Euljiro 1-ga', '을지로3가': 'Euljiro 3-ga',
+            '충정로': 'Chungjeongno', '동대문역사문화공원': 'Dongdaemun H&C Park',
+            '강변': 'Gangbyeon', '구의': 'Guui', '까치산': 'Kkachisan', '당산': 'Dangsan',
+            '대림': 'Daerim', '봉천': 'Bongcheon', '시청': 'City Hall', '신답': 'Sindap',
+            '신당': 'Sindang', '신대방': 'Sindaebang', '신림': 'Sillim', '신설동': 'Sinseol-dong',
+            '신정네거리': 'Sinjeongnegeori', '아현': 'Ahyeon', '영등포구청': 'Yeongdeungpo-gu Office',
+            '용답': 'Yongdap', '용두': 'Yongdu', '이대': 'Ewha Womans Univ.',
+            '잠실나루': 'Jamsilnaru', '한양대': 'Hanyang Univ.', '합정': 'Hapjeong',
+            '문래': 'Mullae', '상왕십리': 'Sangwangsimni', '신촌(지하)': 'Sinchon (Underground)', '을지로4가': 'Euljiro 4-ga'
+        }
+
+        df['영문역명'] = df['Station'].map(name_map).fillna(df['Station'])
+
+        # ✅ 7. numpy로 평균 혼잡도 계산
+        df['총혼잡도'] = np.mean(df[self.time_cols].values, axis=1)
+
+        # ✅ 8. 필요한 변수 저장
+        self.df = df
+        self.station_names = sorted(df['영문역명'].unique())
 
     def init_ui(self):
         layout = QVBoxLayout()
 
-        # CSV 불러오기 버튼
-        self.load_button = QPushButton("CSV 파일 불러오기")
-        self.load_button.clicked.connect(self.load_csv)
-        layout.addWidget(self.load_button)
+        # ✅ 검색창
+        self.search_bar = QLineEdit()
+        self.search_bar.setPlaceholderText("Search station (e.g., Gangnam)")
+        self.search_bar.textChanged.connect(self.filter_list)
+        layout.addWidget(self.search_bar)
 
-        layout.addWidget(QLabel("분석할 역을 선택하세요:"))
+        # ✅ 역 리스트
+        self.list_widget = QListWidget()
+        self.list_widget.addItems(self.station_names)
+        layout.addWidget(self.list_widget)
 
-        # 역 선택 체크박스 (스크롤 가능)
-        station_names = ['강남', '홍대입구', '신도림', '고속터미널', '잠실',
-                         '건대입구', '서울역', '동대문역사문화공원', '을지로입구', '신촌']
+        # ✅ 버튼
+        self.btn_plot = QPushButton("Plot Congestion")
+        self.btn_plot.clicked.connect(self.draw_plot)
+        layout.addWidget(self.btn_plot)
 
-        checkbox_layout = QVBoxLayout()
-        for station in station_names:
-            checkbox = QCheckBox(station)
-            self.station_checkboxes[station] = checkbox
-            checkbox_layout.addWidget(checkbox)
-
-        scroll_widget = QWidget()
-        scroll_widget.setLayout(checkbox_layout)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(scroll_widget)
-        layout.addWidget(scroll)
-
-        # 버튼: 선그래프, 막대그래프
-        button_layout = QHBoxLayout()
-        self.line_btn = QPushButton("선그래프 시각화")
-        self.line_btn.clicked.connect(self.draw_line_chart)
-        button_layout.addWidget(self.line_btn)
-
-        self.bar_btn = QPushButton("막대그래프 시각화")
-        self.bar_btn.clicked.connect(self.draw_bar_chart)
-        button_layout.addWidget(self.bar_btn)
-
-        layout.addLayout(button_layout)
+        # ✅ 그래프 캔버스
+        self.figure = Figure(figsize=(12, 6))
+        self.canvas = FigureCanvas(self.figure)
+        layout.addWidget(self.canvas)
 
         self.setLayout(layout)
 
-    def load_csv(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "CSV 파일 선택", "", "CSV Files (*.csv)")
-        if file_path:
-            self.file_path = file_path
-            QMessageBox.information(self, "성공", "CSV 파일이 성공적으로 불러와졌습니다.")
+    def filter_list(self, text):
+        self.list_widget.clear()
+        filtered = [name for name in self.station_names if text.lower() in name.lower()]
+        self.list_widget.addItems(filtered)
 
-    def get_selected_stations(self):
-        return [station for station, cb in self.station_checkboxes.items() if cb.isChecked()]
-
-    def draw_line_chart(self):
-        selected = self.get_selected_stations()
+    def draw_plot(self):
+        selected = self.list_widget.currentItem()
         if not selected:
-            QMessageBox.warning(self, "경고", "하나 이상의 역을 선택해주세요.")
+            QMessageBox.warning(self, "No selection", "Please select a station.")
             return
-        try:
-            df = pd.read_csv(self.file_path, encoding='cp949')
-            df = df[df['출발역'].isin(selected)]
-            time_columns = df.columns[6:]
-            pivot_df = df.groupby('출발역')[time_columns].mean().T
 
-            plt.figure(figsize=(14, 7))
-            for 역 in pivot_df.columns:
-                plt.plot(pivot_df.index, pivot_df[역], marker='o', label=역)
+        station_name = selected.text()
+        df_filtered = self.df[self.df['영문역명'] == station_name]
+        pivot = df_filtered.groupby('영문역명')[self.time_cols].mean().T
 
-            plt.title("선택된 역의 시간대별 평균 혼잡도 (선그래프)")
-            plt.xlabel("시간대")
-            plt.ylabel("혼잡도 지수")
-            plt.xticks(rotation=45)
-            plt.legend()
-            plt.grid(True, linestyle='--', alpha=0.7)
-            plt.tight_layout()
-            plt.show()
-        except Exception as e:
-            QMessageBox.critical(self, "오류", str(e))
-
-    def draw_bar_chart(self):
-        selected = self.get_selected_stations()
-        if not selected:
-            QMessageBox.warning(self, "경고", "하나 이상의 역을 선택해주세요.")
-            return
-        try:
-            df = pd.read_csv(self.file_path, encoding='cp949')
-            df = df[df['출발역'].isin(selected)]
-            time_columns = df.columns[6:]
-            pivot_df = df.groupby('출발역')[time_columns].mean()
-
-            plt.figure(figsize=(16, 8))
-            bar_width = 0.8 / len(pivot_df.index)
-            index = range(len(time_columns))
-
-            for i, station in enumerate(pivot_df.index):
-                plt.bar(
-                    [x + i * bar_width for x in index],
-                    pivot_df.loc[station],
-                    bar_width,
-                    label=station
-                )
-
-            plt.xticks([x + bar_width * len(pivot_df.index) / 2 for x in index], time_columns, rotation=45)
-            plt.title("선택된 역의 시간대별 평균 혼잡도 (막대그래프)")
-            plt.xlabel("시간대")
-            plt.ylabel("혼잡도 지수")
-            plt.legend()
-            plt.grid(axis='y', linestyle='--', alpha=0.7)
-            plt.tight_layout()
-            plt.show()
-        except Exception as e:
-            QMessageBox.critical(self, "오류", str(e))
-
+        # ✅ 그래프 그리기
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.plot(pivot.index, pivot[station_name], marker='o')
+        ax.set_title(f"Congestion Trend – {station_name}")
+        ax.set_xlabel("Time")
+        ax.set_ylabel("Congestion Index")
+        ax.grid(True, linestyle='--', alpha=0.5)
+        plt.setp(ax.get_xticklabels(), rotation=45)  # ✅ 시간 라벨 회전
+        self.figure.tight_layout()
+        self.canvas.draw()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    window = SubwayCongestionApp()
+    window = SubwayApp()
     window.show()
     sys.exit(app.exec_())
-
-import numpy as np
-
-# 1. 데이터 불러오기
-station = pd.read_csv("지하철 혼잡도.csv",  encoding='cp949')
-
-# 2. 시간대 칼럼을 HH:MM 형식으로 영어로 변경
-new_time_cols = {}
-for col in station.columns:
-    if '시' in col and '분' in col:
-        hour = col.split('시')[0].zfill(2)
-        minute = col.split('시')[1].replace('분', '').zfill(2)
-        new_time_cols[col] = f"{hour}:{minute}"
-station = station.rename(columns=new_time_cols)
-
-# 3. 2호선 역만 필터링 (수동 리스트)
-line2_stations = [
-    '강남', '역삼', '선릉', '삼성', '종합운동장', '신천', '잠실', '잠실새내',
-    '신정', '양천구청', '도림천', '신도림', '구로디지털단지', '건대입구', '홍대입구', '신촌'
-]
-station = station[station['출발역'].isin(line2_stations)]
-
-# 4. 출발역 한글명을 영어로 매핑 (차트용)
-station_name_map = {
-    '강남': 'Gangnam',
-    '역삼': 'Yeoksam',
-    '선릉': 'Seolleung',
-    '삼성': 'Samseong',
-    '종합운동장': 'Sports Complex',
-    '신천': 'Sincheon',
-    '잠실': 'Jamsil',
-    '잠실새내': 'Jamsilsaenae',
-    '신정': 'Sinjeong',
-    '양천구청': 'Yangcheon-gu Office',
-    '도림천': 'Dorimcheon',
-    '신도림': 'Sindorim',
-    '구로디지털단지': 'Guro Digital Complex',
-    '건대입구': 'Konkuk Univ.',
-    '홍대입구': 'Hongdae',
-    '신촌': 'Sinchon'
-}
-station['영문역명'] = station['출발역'].replace(station_name_map)
-
-# 5. 시간대 컬럼 추출 (09:00~23:00 사이)
-time_columns = [col for col in station.columns if ':' in col and '09:00' <= col <= '23:00']
-
-# 6. 각 행에 대한 평균 혼잡도 계산
-station['총혼잡도'] = station[time_columns].mean(axis=1)
-
-# 7. 출발역별 평균 혼잡도 계산 후 상위 10개 역 추출
-mean_congestion = station.groupby('출발역')['총혼잡도'].mean()
-top10_station_names = mean_congestion.sort_values(ascending=False).head(10).index.tolist()
-
-# 8. 상위 10개 역 데이터만 추출
-top10_data = station[station['출발역'].isin(top10_station_names)]
-
-# 9. 전치된 데이터프레임으로 시간대별 평균 혼잡도
-pivot_df = top10_data.groupby('영문역명')[time_columns].mean().T
-
-# 10. 시각화
-plt.figure(figsize=(14, 7))
-for 역이름 in pivot_df.columns:
-    plt.plot(pivot_df.index, pivot_df[역이름], label=역이름, marker='o')
-
-plt.title('Average Congestion by Time – Top 10 Stations on Line 2')
-plt.xlabel('Time')
-plt.ylabel('Congestion Index')
-plt.xticks(rotation=45)
-plt.legend(title='Station', bbox_to_anchor=(1.05, 1), loc='upper left')
-plt.grid(True, linestyle='--', alpha=0.5)
-plt.tight_layout()
-plt.show()
-
-
-# ====== 혼잡도 낮은 역 TOP 5 ======
-
-# 8. 혼잡도 평균 계산
-station['총혼잡도'] = station[time_columns].mean(axis=1)
-
-# 9. 평균 혼잡도가 낮은 역 5개 추출
-least_crowded = (
-    station.groupby('영문역명')['총혼잡도']
-    .mean()
-    .sort_values()
-    .head(5)
-    .index
-)
-
-# 10. 해당 역들만 필터링
-top5_data = station[station['영문역명'].isin(least_crowded)]
-
-# 11. 시간대별 평균 혼잡도 재계산
-pivot_df = top5_data.groupby('영문역명')[time_columns].mean().T
-
-# 12. 시각화 (비혼잡 역)
-plt.figure(figsize=(14, 7))
-for 역이름 in pivot_df.columns:
-    plt.plot(pivot_df.index, pivot_df[역이름], label=역이름, marker='o')
-
-plt.title('Least Crowded 5 Stations – Avg Congestion by Time')
-plt.xlabel('Time')
-plt.ylabel('Congestion Index')
-plt.xticks(rotation=45)
-plt.legend(title='Station', fontsize=9, bbox_to_anchor=(1.05, 1), loc='upper left')
-plt.grid(True, linestyle='--', alpha=0.5)
-plt.tight_layout()
-plt.show()
- main
